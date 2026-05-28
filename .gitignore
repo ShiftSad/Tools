@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Secrets & env local
+.env
+.env.local
+.env.*.local
+
+# Runtime data (SQLite, uploads de revisão)
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Design handoff — não versionar
+design.tar
+design-extracted/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs & test artifacts
+*.log
+.pytest_cache/
+.coverage
+htmlcov/

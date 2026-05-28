@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="pt-BR" data-page="virus">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VirusParcial — tools.shiftsad.dev</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+    }
+
+    .attach-row {
+      margin-top: 14px;
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      font-size: 13.5px;
+      color: var(--dim);
+      flex-wrap: wrap;
+    }
+    .attach-row input[type="file"] { display: none; }
+    .attach-row__name {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--muted);
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .attach-row__clear {
+      background: none; border: 0; padding: 0;
+      color: var(--dim); font-size: 13.5px; cursor: pointer;
+      font-family: inherit;
+      text-decoration: underline;
+      text-decoration-color: transparent;
+      text-underline-offset: 3px;
+    }
+    .attach-row__clear:hover { color: var(--text); text-decoration-color: var(--text); }
+
+    body.is-dragging::after {
+      content: "Solte o .jar";
+      position: fixed;
+      inset: 16px;
+      border: 1.5px dashed var(--text);
+      border-radius: 6px;
+      background: rgba(10, 10, 10, 0.7);
+      backdrop-filter: blur(2px);
+      display: grid;
+      place-items: center;
+      font-family: var(--mono);
+      font-size: 14px;
+      color: var(--text);
+      z-index: 100;
+      pointer-events: none;
+    }
+
+    /* progress strip while hashing locally */
+    .progress {
+      margin-top: 10px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--dim);
+      min-height: 1em;
+    }
+    .progress .step { color: var(--muted); }
+    .progress .step.done { color: var(--text); }
+
+    /* result */
+    .result { margin-top: 64px; }
+    .result__verdict {
+      font-size: 22px;
+      letter-spacing: -0.015em;
+      margin: 0 0 14px;
+      font-weight: 500;
+      line-height: 1.25;
+    }
+    .result__verdict.is-infected { color: #f0a8a8; }
+    .result__verdict.is-clean   { color: var(--text); }
+    .result__body {
+      font-size: 14.5px;
+      color: var(--muted);
+      line-height: 1.6;
+      max-width: 580px;
+      margin: 0 0 22px;
+      text-wrap: pretty;
+    }
+    .result__body strong { color: var(--text); font-weight: 500; }
+    .result__meta {
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 6px 18px;
+      font-size: 13px;
+    }
+    .result__meta dt { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+    .result__meta dd {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+
+    .err {
+      margin-top: 18px;
+      font-size: 13px;
+      color: #d88a8a;
+      font-family: var(--mono);
+    }
+
+    .cached-note {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--dim);
+      font-family: var(--mono);
+    }
+  </style>
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="page">
+    <h1 class="page-title">VirusParcial</h1>
+    <p class="page-lede">Cole um <span class="mono">.jar</span>, plugin, mod Forge, mod Fabric, qualquer um. Comparo o hash contra uma base de vírus conhecidos. Se passar, o arquivo é encaminhado para análise manual.</p>
+
+    <div class="form-row">
+      <input class="input" id="email" type="email" placeholder="E-mail (opcional, pra te avisar do resultado da análise)" autocomplete="email" />
+      <button class="btn" id="scan-btn" disabled>Verificar</button>
+    </div>
+
+    <div class="attach-row">
+      <label>
+        <input type="file" id="file-input" accept=".jar" />
+        <a class="link" href="#" onclick="event.preventDefault();this.previousElementSibling.click();">Anexar .jar</a>
+      </label>
+      <span class="attach-row__name" id="file-name"></span>
+      <button class="attach-row__clear" id="clear-btn" hidden type="button">limpar</button>
+    </div>
+
+    <div class="progress" id="progress"></div>
+    <div id="err" class="err" hidden></div>
+    <section class="result" id="result" hidden></section>
+  </main>
+
+  <script src="header.js"></script>
+  <script>
+    const API_BASE = ""; // same origin
+    const CACHE_KEY = "vp_scan_cache";
+    const $ = (s) => document.querySelector(s);
+    const state = { file: null, busy: false };
+
+    // session cache: hash -> last result. Skips re-uploading the same file twice.
+    const cache = (() => {
+      try { return JSON.parse(sessionStorage.getItem(CACHE_KEY) || "{}"); }
+      catch { return {}; }
+    })();
+    const saveCache = () => {
+      try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch {}
+    };
+
+    // ── drag-anywhere ──
+    let dragDepth = 0;
+    window.addEventListener("dragenter", (e) => {
+      if (!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+      dragDepth++;
+      document.body.classList.add("is-dragging");
+    });
+    window.addEventListener("dragleave", () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) document.body.classList.remove("is-dragging");
+    });
+    window.addEventListener("dragover", e => e.preventDefault());
+    window.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      document.body.classList.remove("is-dragging");
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) setFile(f);
+    });
+
+    $("#file-input").addEventListener("change", e => {
+      const f = e.target.files && e.target.files[0];
+      if (f) setFile(f);
+      e.target.value = "";
+    });
+    $("#clear-btn").addEventListener("click", () => setFile(null));
+
+    function setFile(f) {
+      if (f && !f.name.toLowerCase().endsWith(".jar")) {
+        showErr("só aceito arquivos .jar");
+        return;
+      }
+      hideErr();
+      $("#progress").textContent = "";
+      $("#result").hidden = true;
+      state.file = f || null;
+      $("#file-name").textContent = f ? f.name : "";
+      $("#clear-btn").hidden = !f;
+      $("#scan-btn").disabled = !f || state.busy;
+    }
+
+    function showErr(msg) {
+      const el = $("#err");
+      el.textContent = msg;
+      el.hidden = false;
+    }
+    function hideErr() { $("#err").hidden = true; }
+
+    function setProgress(steps) {
+      // steps: [{ label, status: "pending" | "done" }]
+      $("#progress").innerHTML = steps
+        .map(s => `<span class="step ${s.status === "done" ? "done" : ""}">${s.label}</span>`)
+        .join(" → ");
+    }
+
+    $("#scan-btn").addEventListener("click", scan);
+    $("#email").addEventListener("keydown", e => { if (e.key === "Enter" && !$("#scan-btn").disabled) scan(); });
+
+    async function hashFile(file) {
+      const buf = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+
+    async function scan() {
+      if (!state.file || state.busy) return;
+      state.busy = true;
+      $("#scan-btn").disabled = true;
+      $("#scan-btn").textContent = "Verificando…";
+      hideErr();
+      $("#result").hidden = true;
+
+      try {
+        // step 1: hash locally
+        setProgress([
+          { label: "calculando hash", status: "pending" },
+          { label: "consultando", status: "pending" },
+          { label: "enviando arquivo", status: "pending" },
+        ]);
+        const hash = await hashFile(state.file);
+
+        // Reuse infected results from this session (hash is on the server blocklist).
+        // Do NOT cache-bypass clean results — package/url rules may have been added since.
+        if (cache[hash] && cache[hash].status === "infected") {
+          setProgress([
+            { label: "hash em cache", status: "done" },
+          ]);
+          render({ ...cache[hash], _cached: true });
+          return;
+        }
+
+        // step 2: ask backend if it already knows the hash (cheap, ~70B)
+        setProgress([
+          { label: "hash calculado", status: "done" },
+          { label: "consultando", status: "pending" },
+          { label: "enviando arquivo", status: "pending" },
+        ]);
+        const check = await fetch(`${API_BASE}/api/scan/check`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hash }),
+        });
+        const checkData = await check.json().catch(() => ({}));
+        if (!check.ok) {
+          throw new Error(checkData.error || `erro ${check.status}`);
+        }
+
+        if (checkData.status === "infected" || checkData.status === "clean") {
+          // backend already knows this hash — no upload needed
+          const knownLabel = checkData.status === "infected" ? "hash já conhecido" : "hash na allowlist";
+          setProgress([
+            { label: "hash calculado", status: "done" },
+            { label: knownLabel, status: "done" },
+          ]);
+          const result = {
+            status: checkData.status,
+            hash,
+            filename: state.file.name,
+            size: state.file.size,
+            label: checkData.label || null,
+            _viaAllowlist: checkData.status === "clean",
+          };
+          cache[hash] = result;
+          saveCache();
+          render(result);
+          return;
+        }
+
+        // step 3: hash unknown — upload the file for full analysis
+        setProgress([
+          { label: "hash calculado", status: "done" },
+          { label: "hash desconhecido", status: "done" },
+          { label: "enviando arquivo", status: "pending" },
+        ]);
+
+        const fd = new FormData();
+        fd.append("file", state.file);
+        const email = $("#email").value.trim();
+        if (email) fd.append("email", email);
+
+        const res = await fetch(`${API_BASE}/api/scan`, { method: "POST", body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || `erro ${res.status}`);
+        }
+        setProgress([
+          { label: "hash calculado", status: "done" },
+          { label: "hash desconhecido", status: "done" },
+          { label: "arquivo analisado", status: "done" },
+        ]);
+        cache[hash] = data;
+        saveCache();
+        render(data);
+      } catch (err) {
+        showErr(err && err.message ? err.message : "falha ao conectar com o servidor");
+        $("#progress").textContent = "";
+      } finally {
+        state.busy = false;
+        $("#scan-btn").disabled = !state.file;
+        $("#scan-btn").textContent = "Verificar";
+      }
+    }
+
+    function render(data) {
+      const out = $("#result");
+      out.hidden = false;
+      const infected = data.status === "infected";
+      const viaAllow = data._viaAllowlist;
+      const verdict = infected
+        ? "Vírus conhecido detectado."
+        : viaAllow
+          ? "Arquivo confiável."
+          : "Nada conhecido bateu.";
+      const body = infected
+        ? `O hash do arquivo coincide com um vírus catalogado${data.label ? ` (<strong>${escapeHtml(data.label)}</strong>)` : ""}. <strong>Não execute esse plugin/mod.</strong> Apague.`
+        : viaAllow
+          ? `Hash do arquivo está na allowlist${data.label ? ` (<strong>${escapeHtml(data.label)}</strong>)` : ""} — admin já verificou e marcou como confiável.`
+          : "O arquivo não bate com nenhum vírus conhecido — mas isso não garante que é seguro. Ele foi encaminhado pra análise manual. Se você deixou um e-mail, te aviso quando concluir.";
+      const cachedNote = data._cached
+        ? `<div class="cached-note">resultado do cache da sessão · mesmo arquivo já verificado anteriormente</div>`
+        : "";
+      out.innerHTML = `
+        <h2 class="result__verdict ${infected ? "is-infected" : "is-clean"}">${verdict}</h2>
+        <p class="result__body">${body}</p>
+        ${cachedNote}
+        <dl class="result__meta">
+          <dt>arquivo</dt><dd>${escapeHtml(data.filename || state.file.name)}</dd>
+          <dt>sha-256</dt><dd>${escapeHtml(data.hash || "")}</dd>
+          <dt>tamanho</dt><dd>${formatSize(data.size || state.file.size)}</dd>
+        </dl>
+      `;
+    }
+
+    function formatSize(n) {
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / 1024 / 1024).toFixed(2)} MB`;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+    }
+  </script>
+</body>
+</html>

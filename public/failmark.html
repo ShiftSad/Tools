@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="pt-BR" data-page="fail">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FailMark — tools.shiftsad.dev</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    .search-wrap {
+      position: relative;
+      max-width: 560px;
+    }
+    .suggestions {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0; right: 0;
+      background: var(--surface);
+      border: 1px solid var(--border-2);
+      border-radius: 4px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      z-index: 30;
+      max-height: 280px;
+      overflow-y: auto;
+    }
+    .suggestion {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 12px;
+      align-items: center;
+      padding: 9px 14px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      font-size: 13.5px;
+    }
+    .suggestion:last-child { border-bottom: 0; }
+    .suggestion:hover, .suggestion.is-focus { background: var(--surface-2); }
+    .suggestion__name  { font-family: var(--mono); font-size: 12.5px; }
+    .suggestion__year  { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+    .suggestion__score { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+    /* selected card */
+    .selected {
+      margin-top: 48px;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 36px;
+      align-items: end;
+    }
+    .selected__name {
+      font-size: 28px;
+      letter-spacing: -0.02em;
+      margin: 0 0 6px;
+      font-weight: 500;
+    }
+    .selected__meta {
+      font-size: 13.5px;
+      color: var(--muted);
+      margin: 0;
+    }
+    .selected__score-label {
+      font-size: 12.5px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      text-align: right;
+    }
+    .selected__score {
+      font-family: var(--mono);
+      font-size: 36px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      line-height: 1;
+      text-align: right;
+    }
+    .selected__score-sub {
+      font-size: 12px;
+      color: var(--dim);
+      margin-top: 4px;
+      text-align: right;
+    }
+
+    .verdict {
+      margin-top: 24px;
+      padding: 16px 0 22px;
+      border-bottom: 1px solid var(--border);
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--text);
+      max-width: 680px;
+    }
+    .verdict strong { font-weight: 500; }
+
+    /* peers */
+    .peers-head {
+      margin-top: 36px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 14px;
+    }
+    .peers-head h2 {
+      font-size: 15px;
+      font-weight: 500;
+      margin: 0;
+      letter-spacing: -0.005em;
+    }
+    .peers-head__sub { font-size: 13px; color: var(--muted); }
+
+    .peers {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .peers th, .peers td {
+      text-align: left;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13.5px;
+      vertical-align: baseline;
+    }
+    .peers th {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      padding-top: 8px;
+      padding-bottom: 8px;
+    }
+    .peers th:first-child, .peers td:first-child { padding-left: 0; }
+    .peers th:last-child, .peers td:last-child { padding-right: 0; text-align: right; }
+    .peers tr.is-target td {
+      background: var(--surface-2);
+    }
+    .peers tr.is-target td:first-child { padding-left: 12px; }
+    .peers .col-name { font-family: var(--mono); font-size: 13px; }
+    .peers .col-year { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+    .peers .col-score { font-family: var(--mono); font-size: 13px; }
+
+    /* multi-thread (subdued) */
+    .mc {
+      margin-top: 48px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+    }
+    .mc__toggle {
+      background: none; border: 0; padding: 0; cursor: pointer;
+      color: var(--muted); font-size: 13.5px; font-family: var(--sans);
+      display: inline-flex; align-items: baseline; gap: 8px;
+    }
+    .mc__toggle:hover { color: var(--text); }
+    .mc__toggle .chev { font-family: var(--mono); transition: transform 0.15s; display: inline-block; }
+    .mc__toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+    .mc__body { display: none; margin-top: 18px; }
+    .mc__toggle[aria-expanded="true"] + .mc__body { display: block; }
+    .mc__body p {
+      color: var(--muted); font-size: 13.5px; max-width: 560px; margin: 0 0 18px;
+    }
+  </style>
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="page">
+    <h1 class="page-title">FailMark</h1>
+    <p class="page-lede">Digite o processador que sua hospedagem está te vendendo. Vou comparar com outros processadores parecidos para você ter uma referência melhor de como ele se compara aos outros.</p>
+
+    <div class="search-wrap">
+      <input id="cpu-input" class="input" type="text" placeholder="Ex: Xeon E5-2699 v3, Pentium G4400, Ryzen 5 5600X" autocomplete="off" />
+      <div class="suggestions" id="suggestions" hidden></div>
+    </div>
+
+    <p class="page-lede" id="meta-line" style="margin-top: 12px; font-size: 13px; color: var(--dim);"></p>
+
+    <div id="result" hidden></div>
+  </main>
+
+  <script src="header.js"></script>
+  <script>
+    const API_BASE = "";
+    const $ = (s) => document.querySelector(s);
+
+    const input = $("#cpu-input");
+    const sugBox = $("#suggestions");
+    const metaLine = $("#meta-line");
+    let focusIdx = -1;
+    let matches = [];
+    let searchTimer = null;
+    let meta = null;
+
+    input.addEventListener("input", onInput);
+    input.addEventListener("keydown", onKey);
+    input.addEventListener("focus", onInput);
+    document.addEventListener("click", e => { if (!e.target.closest(".search-wrap")) hideSug(); });
+
+    fetch(`${API_BASE}/api/failmark/meta`)
+      .then(r => r.json())
+      .then(data => {
+        meta = data;
+        if (data.cpu_count) {
+          const when = data.last_sync
+            ? new Date(data.last_sync * 1000).toLocaleDateString("pt-BR")
+            : "nunca";
+          metaLine.textContent = `${data.cpu_count.toLocaleString("pt-BR")} processadores no índice · atualizado ${when}`;
+        } else if (data.sync_status === "running") {
+          metaLine.textContent = "Baixando índice PassMark… primeira sincronização em andamento.";
+        } else {
+          metaLine.textContent = "Índice ainda vazio — sincronização PassMark vai rodar em breve.";
+        }
+      })
+      .catch(() => {
+        metaLine.textContent = "Não consegui carregar metadados do índice.";
+      });
+
+    function onInput() {
+      const q = input.value.trim();
+      clearTimeout(searchTimer);
+      if (q.length < 2) { hideSug(); return; }
+      searchTimer = setTimeout(() => search(q), 180);
+    }
+
+    async function search(q) {
+      try {
+        const res = await fetch(`${API_BASE}/api/failmark/search?q=${encodeURIComponent(q)}&limit=7`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `erro ${res.status}`);
+        matches = data.results || [];
+        if (!matches.length) { hideSug(); return; }
+        focusIdx = -1;
+        sugBox.hidden = false;
+        sugBox.innerHTML = matches.map((c, i) => `
+          <div class="suggestion${i === focusIdx ? " is-focus" : ""}" data-id="${c.id}">
+            <span class="suggestion__name">${escapeHtml(c.name)}</span>
+            <span class="suggestion__year">${c.year || "—"}</span>
+            <span class="suggestion__score">${c.st != null ? `ST ${c.st}` : "ST —"}</span>
+          </div>
+        `).join("");
+        sugBox.querySelectorAll(".suggestion").forEach(el =>
+          el.addEventListener("click", () => pick(+el.dataset.id))
+        );
+      } catch {
+        hideSug();
+      }
+    }
+
+    function hideSug() { sugBox.hidden = true; focusIdx = -1; }
+
+    function onKey(e) {
+      if (sugBox.hidden) { if (e.key === "Enter") tryDirect(); return; }
+      if (e.key === "ArrowDown") { focusIdx = (focusIdx + 1) % matches.length; renderSug(); e.preventDefault(); }
+      else if (e.key === "ArrowUp") { focusIdx = (focusIdx - 1 + matches.length) % matches.length; renderSug(); e.preventDefault(); }
+      else if (e.key === "Enter") { focusIdx >= 0 ? pick(matches[focusIdx].id) : tryDirect(); }
+      else if (e.key === "Escape") hideSug();
+    }
+
+    function renderSug() {
+      sugBox.querySelectorAll(".suggestion").forEach((el, i) => {
+        el.classList.toggle("is-focus", i === focusIdx);
+      });
+    }
+
+    async function tryDirect() {
+      const q = input.value.trim();
+      if (q.length < 2) return;
+      await search(q);
+      if (matches.length) pick(matches[0].id);
+    }
+
+    async function pick(cpuId) {
+      hideSug();
+      try {
+        const res = await fetch(`${API_BASE}/api/failmark/cpu/${cpuId}/peers`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `erro ${res.status}`);
+        input.value = data.cpu.name;
+        renderResult(data.cpu, data.peers, data.table);
+      } catch (err) {
+        $("#result").hidden = false;
+        $("#result").innerHTML = `<p class="err">${escapeHtml(err.message || "falha ao carregar")}</p>`;
+      }
+    }
+
+    function renderResult(cpu, peers, table) {
+      const out = $("#result");
+      out.hidden = false;
+      const year = cpu.year || "—";
+      out.innerHTML = `
+        <div class="selected">
+          <div>
+            <h2 class="selected__name">${escapeHtml(cpu.name)}</h2>
+            <p class="selected__meta">${year} · ${escapeHtml(cpu.segment)}</p>
+          </div>
+          <div>
+            <div class="selected__score-label">single-thread</div>
+            <div class="selected__score">${cpu.st != null ? cpu.st : "—"}</div>
+            <div class="selected__score-sub">índice PassMark</div>
+          </div>
+        </div>
+
+        <div class="verdict">${verdict(cpu)}</div>
+
+        <div class="peers-head">
+          <h2>Processadores com desempenho parecido</h2>
+          <span class="peers-head__sub">${peers.length} resultados · mais antigos primeiro</span>
+        </div>
+        <table class="peers">
+          <thead>
+            <tr>
+              <th>Processador</th>
+              <th>Ano</th>
+              <th>Segmento</th>
+              <th>ST</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${table.map(c => `
+              <tr class="${c.id === cpu.id ? "is-target" : ""}">
+                <td class="col-name">${escapeHtml(c.name)}</td>
+                <td class="col-year">${c.year || "—"}</td>
+                <td>${escapeHtml(c.segment)}</td>
+                <td class="col-score">${c.st != null ? c.st : "—"}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+
+        <div class="mc">
+          <button class="mc__toggle" id="mc-toggle" aria-expanded="false">
+            <span class="chev">›</span> Mostrar comparação multi-thread
+          </button>
+          <div class="mc__body">
+            <p>Pra Minecraft, multi-thread importa menos — a thread principal faz quase tudo que afeta o TPS. Inclusos só para referência.</p>
+            <table class="peers">
+              <thead><tr><th>Processador</th><th>Ano</th><th>MT</th></tr></thead>
+              <tbody>
+                ${[...peers, cpu].filter(c => c.mt != null).sort((a, b) => b.mt - a.mt).map(c => `
+                  <tr class="${c.id === cpu.id ? "is-target" : ""}">
+                    <td class="col-name">${escapeHtml(c.name)}</td>
+                    <td class="col-year">${c.year || "—"}</td>
+                    <td class="col-score">${c.mt.toLocaleString("pt-BR")}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+      document.getElementById("mc-toggle").addEventListener("click", e => {
+        const exp = e.currentTarget.getAttribute("aria-expanded") === "true";
+        e.currentTarget.setAttribute("aria-expanded", String(!exp));
+      });
+    }
+
+    function verdict(cpu) {
+      const st = cpu.st;
+      const tail = " Um processador desktop moderno (Ryzen 5 5600 / i5-12400 ou mais novo) entrega aproximadamente o <strong>dobro</strong> dessa pontuação em um único core.";
+      if (st == null)
+        return `<strong>${escapeHtml(cpu.name)}</strong> está no índice, mas sem pontuação single-thread disponível.`;
+      if (st < 1000)
+        return `<strong>${escapeHtml(cpu.name)}</strong> está na faixa de processadores de 2006–2010. Qualquer coisa acima de 30 jogadores vai derrubar o TPS no primeiro evento minimamente custoso.` + tail;
+      if (st < 1800)
+        return `<strong>${escapeHtml(cpu.name)}</strong> é a faixa que hosts baratos adoram — muitos cores escondendo desempenho por thread fraco. Aguenta hub; sofre em survival, skyblock ou qualquer coisa com redstone.` + tail;
+      if (st < 2700)
+        return `<strong>${escapeHtml(cpu.name)}</strong> dá pra usar. Roda uma comunidade pequena com folga. Considere isso um piso, não uma meta.`;
+      return `<strong>${escapeHtml(cpu.name)}</strong> tem ótimo desempenho single-thread. É o que você deveria estar pagando.`;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+    }
+  </script>
+</body>
+</html>

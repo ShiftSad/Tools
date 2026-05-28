@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="pt-BR" data-page="deps">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dependências — tools.shiftsad.dev</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="shared.css" />
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <style>
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+    }
+
+    .attach-row {
+      margin-top: 14px;
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      font-size: 13.5px;
+      color: var(--dim);
+    }
+    .attach-row input[type="file"] { display: none; }
+    .attach-row__count.is-some { color: var(--muted); }
+    .attach-row__clear {
+      background: none; border: 0; padding: 0;
+      color: var(--dim); font-size: 13.5px; cursor: pointer;
+      font-family: inherit;
+      text-decoration: underline;
+      text-decoration-color: transparent;
+      text-underline-offset: 3px;
+    }
+    .attach-row__clear:hover { color: var(--text); text-decoration-color: var(--text); }
+
+    /* drag-anywhere indicator */
+    body.is-dragging::after {
+      content: "Solte os arquivos";
+      position: fixed;
+      inset: 16px;
+      border: 1.5px dashed var(--text);
+      border-radius: 6px;
+      background: rgba(10, 10, 10, 0.7);
+      backdrop-filter: blur(2px);
+      display: grid;
+      place-items: center;
+      font-family: var(--mono);
+      font-size: 14px;
+      color: var(--text);
+      z-index: 100;
+      pointer-events: none;
+    }
+
+    /* results */
+    .results { margin-top: 64px; }
+    .results__title {
+      font-size: 14px;
+      color: var(--muted);
+      margin: 0 0 32px;
+      letter-spacing: -0.005em;
+    }
+    .results__title strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .group { margin-bottom: 36px; }
+    .group:last-child { margin-bottom: 0; }
+    .group__head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 14px;
+    }
+    .group__head h3 {
+      font-size: 14px;
+      font-weight: 500;
+      margin: 0;
+      letter-spacing: -0.005em;
+    }
+    .group__count {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--dim);
+      margin-left: auto;
+    }
+    .group__list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .group__list li {
+      padding: 6px 0;
+      font-size: 14.5px;
+      line-height: 1.45;
+    }
+    .group__empty {
+      color: var(--dim);
+      font-size: 13.5px;
+      padding: 4px 0;
+    }
+
+    .skipped {
+      margin-top: 28px;
+      font-size: 13px;
+      color: var(--dim);
+      font-family: var(--mono);
+    }
+    .skipped summary { cursor: pointer; outline: none; }
+    .skipped summary:hover { color: var(--muted); }
+    .skipped ul { list-style: none; margin: 10px 0 0; padding: 0; }
+    .skipped li { padding: 3px 0; }
+  </style>
+</head>
+<body>
+  <div id="site-header"></div>
+
+  <main class="page">
+    <h1 class="page-title">Extrator de dependências</h1>
+    <p class="page-lede">Anexe seus plugins, digite o nome de um, e veja o que depende dele antes de remover.</p>
+
+    <div class="form-row">
+      <input class="input" id="target" type="text" placeholder="Nome do plugin (ex: PlaceholderAPI)" autocomplete="off" />
+      <button class="btn" id="analyze-btn">Analisar</button>
+    </div>
+
+    <div class="attach-row">
+      <label>
+        <input type="file" id="file-input" multiple accept=".jar,.zip" />
+        <a class="link" href="#" onclick="event.preventDefault();this.previousElementSibling.click();">Anexar arquivos</a>
+      </label>
+      <span class="attach-row__count" id="count">nenhum arquivo</span>
+      <button class="attach-row__clear" id="clear-btn" hidden type="button">limpar</button>
+    </div>
+
+    <section class="results" id="results" hidden></section>
+  </main>
+
+  <script src="header.js"></script>
+  <script>
+    const state = {
+      plugins: [],
+      skipped: [],
+      parsing: 0,
+    };
+    const $ = (s) => document.querySelector(s);
+
+    // ── drag-anywhere ──
+    let dragDepth = 0;
+    window.addEventListener("dragenter", (e) => {
+      if (!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+      dragDepth++;
+      document.body.classList.add("is-dragging");
+    });
+    window.addEventListener("dragleave", () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) document.body.classList.remove("is-dragging");
+    });
+    window.addEventListener("dragover", e => e.preventDefault());
+    window.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      document.body.classList.remove("is-dragging");
+      if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    });
+
+    $("#file-input").addEventListener("change", e => {
+      addFiles(e.target.files);
+      e.target.value = "";
+    });
+    $("#clear-btn").addEventListener("click", () => {
+      state.plugins = [];
+      state.skipped = [];
+      renderCount();
+    });
+
+    async function addFiles(list) {
+      const files = Array.from(list);
+      state.parsing += files.length;
+      renderCount();
+      try {
+        await Promise.all(files.map(processTopLevel));
+      } finally {
+        state.parsing -= files.length;
+        renderCount();
+      }
+    }
+
+    async function processTopLevel(file) {
+      const name = file.name.toLowerCase();
+      try {
+        if (name.endsWith(".jar")) {
+          await ingestJar(file.name, file);
+        } else if (name.endsWith(".zip")) {
+          await ingestZip(file.name, file);
+        } else {
+          state.skipped.push({ filename: file.name, reason: "tipo não suportado" });
+        }
+      } catch (err) {
+        state.skipped.push({ filename: file.name, reason: err && err.message ? err.message : "falha ao ler" });
+      }
+    }
+
+    // a .jar IS a zip with plugin.yml at the root
+    async function ingestJar(label, blob) {
+      const zip = await JSZip.loadAsync(blob);
+      const entry = zip.file("plugin.yml") || zip.file("paper-plugin.yml") || zip.file("bungee.yml") || zip.file("velocity-plugin.json");
+      if (!entry) {
+        state.skipped.push({ filename: label, reason: "sem plugin.yml" });
+        return;
+      }
+      const text = await entry.async("string");
+      const meta = entry.name.endsWith(".json") ? parseVelocity(text) : parsePluginYml(text);
+      if (!meta || !meta.name) {
+        state.skipped.push({ filename: label, reason: "plugin.yml sem nome" });
+        return;
+      }
+      state.plugins.push({ filename: label, ...meta });
+    }
+
+    // a .zip can either be a bundle of .jar files OR a misnamed .jar
+    async function ingestZip(label, blob) {
+      const zip = await JSZip.loadAsync(blob);
+      // case A: looks like a packed plugin (has plugin.yml at root) — treat as jar
+      if (zip.file("plugin.yml") || zip.file("paper-plugin.yml")) {
+        return ingestJar(label, blob);
+      }
+      // case B: walk all .jar entries
+      const jarEntries = [];
+      zip.forEach((path, entry) => {
+        if (!entry.dir && path.toLowerCase().endsWith(".jar")) jarEntries.push({ path, entry });
+      });
+      if (!jarEntries.length) {
+        state.skipped.push({ filename: label, reason: "sem .jar dentro" });
+        return;
+      }
+      await Promise.all(jarEntries.map(async ({ path, entry }) => {
+        const innerBlob = await entry.async("blob");
+        await ingestJar(`${label} › ${path}`, innerBlob);
+      }));
+    }
+
+    function parsePluginYml(text) {
+      try {
+        const doc = jsyaml.load(text);
+        if (!doc || typeof doc !== "object") return null;
+        return {
+          name: doc.name != null ? String(doc.name).trim() : null,
+          depend: normaliseList(doc.depend),
+          softdepend: normaliseList(doc.softdepend),
+          loadbefore: normaliseList(doc.loadbefore),
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function parseVelocity(text) {
+      try {
+        const doc = JSON.parse(text);
+        const deps = Array.isArray(doc.dependencies) ? doc.dependencies : [];
+        return {
+          name: doc.id || doc.name || null,
+          depend:     deps.filter(d => d && !d.optional).map(d => d.id).filter(Boolean),
+          softdepend: deps.filter(d => d &&  d.optional).map(d => d.id).filter(Boolean),
+          loadbefore: [],
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function normaliseList(v) {
+      if (v == null) return [];
+      if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);
+      // tolerate `depend: Foo` (single string) or comma-separated
+      return String(v).split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+    }
+
+    function renderCount() {
+      const el = $("#count");
+      const n = state.plugins.length;
+      const skipped = state.skipped.length;
+      const parsing = state.parsing;
+      let label;
+      if (parsing) {
+        label = `lendo ${parsing}…`;
+      } else if (!n && !skipped) {
+        label = "nenhum arquivo";
+      } else {
+        label = `${n} ${n === 1 ? "plugin" : "plugins"}`;
+        if (skipped) label += ` · ${skipped} ignorado${skipped === 1 ? "" : "s"}`;
+      }
+      el.textContent = label;
+      el.classList.toggle("is-some", n > 0 || parsing > 0);
+      $("#clear-btn").hidden = n === 0 && skipped === 0 && parsing === 0;
+    }
+
+    // ── analyze ──
+    $("#analyze-btn").addEventListener("click", run);
+    $("#target").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+
+    function run() {
+      const target = $("#target").value.trim();
+      if (!target) { $("#target").focus(); return; }
+      render(target);
+    }
+
+    function render(target) {
+      const tLower = target.toLowerCase();
+      const unique = [...new Map(state.plugins.map(p => [p.name, p])).values()];
+
+      const hard = unique
+        .filter(p => (p.depend || []).some(d => d.toLowerCase() === tLower))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const soft = unique
+        .filter(p => (p.softdepend || []).some(d => d.toLowerCase() === tLower))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      const found = unique.find(p => p.name.toLowerCase() === tLower);
+      const total = hard.length + soft.length;
+
+      const out = $("#results");
+      out.hidden = false;
+
+      let header;
+      if (!unique.length) {
+        header = `nenhum plugin lido — anexe arquivos <span class="mono">.jar</span> ou <span class="mono">.zip</span> primeiro`;
+      } else {
+        header = `${total} ${total === 1 ? "plugin depende" : "plugins dependem"} de <strong>${escapeHtml(target)}</strong>${found ? "" : " · alvo não está no conjunto"}`;
+      }
+
+      const skippedHtml = state.skipped.length
+        ? `<details class="skipped">
+             <summary>${state.skipped.length} arquivo${state.skipped.length === 1 ? "" : "s"} ignorado${state.skipped.length === 1 ? "" : "s"}</summary>
+             <ul>${state.skipped.map(s => `<li>${escapeHtml(s.filename)} — ${escapeHtml(s.reason)}</li>`).join("")}</ul>
+           </details>`
+        : "";
+
+      out.innerHTML = `
+        <p class="results__title">${header}</p>
+
+        <div class="group">
+          <div class="group__head">
+            <h3>Obrigatórias</h3>
+            <span class="group__count">${hard.length}</span>
+          </div>
+          ${hard.length
+            ? `<ul class="group__list">${hard.map(p => `<li>${escapeHtml(p.name)}</li>`).join("")}</ul>`
+            : `<div class="group__empty">—</div>`
+          }
+        </div>
+
+        <div class="group">
+          <div class="group__head">
+            <h3>Opcionais</h3>
+            <span class="group__count">${soft.length}</span>
+          </div>
+          ${soft.length
+            ? `<ul class="group__list">${soft.map(p => `<li>${escapeHtml(p.name)}</li>`).join("")}</ul>`
+            : `<div class="group__empty">—</div>`
+          }
+        </div>
+
+        ${skippedHtml}
+      `;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+    }
+  </script>
+</body>
+</html>
