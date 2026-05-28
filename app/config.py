@@ -9,6 +9,16 @@ class Config:
     DATA_DIR = pathlib.Path(os.environ.get("DATA_DIR", "./data")).resolve()
     MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
     MAX_CONTENT_LENGTH = MAX_UPLOAD_BYTES + 4096  # tiny slack for multipart overhead
+
+    # JAR/ZIP analysis limits (zip bomb mitigation)
+    MAX_ZIP_ENTRIES = int(os.environ.get("MAX_ZIP_ENTRIES", "10000"))
+    MAX_ZIP_ENTRY_READ_BYTES = int(
+        os.environ.get("MAX_ZIP_ENTRY_READ_BYTES", str(8 * 1024 * 1024))
+    )
+    MAX_ZIP_TOTAL_READ_BYTES = int(
+        os.environ.get("MAX_ZIP_TOTAL_READ_BYTES", str(32 * 1024 * 1024))
+    )
+    MAX_ZIP_COMPRESSION_RATIO = int(os.environ.get("MAX_ZIP_COMPRESSION_RATIO", "80"))
     UPLOAD_DIR = DATA_DIR / "uploads"
     DB_PATH = DATA_DIR / "tools.sqlite"
     LEGACY_DB_PATH = DATA_DIR / "virusparcial.sqlite"

@@ -16,8 +16,13 @@ import io
 import re
 import zipfile
 
+from .config import Config
+
 CLASS_EXT = ".class"
 RESOURCE_EXTS = (".yml", ".yaml", ".json", ".properties", ".txt", ".mf", ".xml", ".cfg", ".conf", ".toml")
+
+# Local file header — standard ZIP/JAR start (not executable-wrapped jars).
+ZIP_MAGIC = b"PK\x03\x04"
 
 URL_RE = re.compile(
     rb"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+",
@@ -25,9 +30,71 @@ URL_RE = re.compile(
 )
 TRIM_PUNCT = ".,;:!?)]}>\"'"
 
+_READ_CHUNK = 64 * 1024
+
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def validate_jar_magic(data: bytes) -> None:
+    """Reject non-ZIP payloads before parsing (extension alone is not enough)."""
+    if len(data) < 4:
+        raise ValueError("arquivo muito pequeno ou inválido")
+    if not data.startswith(ZIP_MAGIC):
+        raise ValueError(
+            "arquivo não é um .jar/zip válido (assinatura PK\\x03\\x04 ausente)"
+        )
+
+
+def _safe_zip_name(name: str) -> bool:
+    """Block path traversal entries inside the archive."""
+    if not name or name.startswith("/"):
+        return False
+    parts = name.replace("\\", "/").split("/")
+    return ".." not in parts
+
+
+def _entry_suspicious(info: zipfile.ZipInfo) -> str | None:
+    """Header-based checks before reading entry body (zip bomb hints)."""
+    uncompressed = info.file_size
+    compressed = info.compress_size
+    if uncompressed > Config.MAX_ZIP_ENTRY_READ_BYTES:
+        return (
+            f"entrada '{info.filename}' declara {uncompressed} bytes descomprimidos "
+            f"(limite {Config.MAX_ZIP_ENTRY_READ_BYTES})"
+        )
+    if compressed > 0 and uncompressed > 0:
+        ratio = uncompressed / compressed
+        if ratio > Config.MAX_ZIP_COMPRESSION_RATIO:
+            return (
+                f"entrada '{info.filename}' com taxa de compressão suspeita "
+                f"({ratio:.0f}:1, limite {Config.MAX_ZIP_COMPRESSION_RATIO}:1)"
+            )
+    return None
+
+
+def _read_bounded(stream, per_entry_cap: int, budget: int) -> tuple[bytes, int]:
+    """Read at most per_entry_cap bytes from stream, decrementing shared budget."""
+    limit = min(per_entry_cap, budget)
+    if limit <= 0:
+        raise ValueError("limite de leitura do .jar excedido")
+
+    chunks: list[bytes] = []
+    total = 0
+    while total < limit:
+        chunk = stream.read(min(_READ_CHUNK, limit - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+
+    if total >= limit and stream.read(1):
+        raise ValueError(
+            f"conteúdo descomprimido excede o limite de {per_entry_cap} bytes por entrada"
+        )
+
+    return b"".join(chunks), budget - total
 
 
 def _extract_urls(data: bytes):
@@ -41,14 +108,17 @@ def _extract_urls(data: bytes):
 def analyze(jar_bytes: bytes) -> dict:
     """Parse the jar and return all the artefacts we care about for matching.
 
-    Raises ValueError if the file isn't a readable zip.
+    Raises ValueError if the file isn't a readable zip or exceeds safety limits.
     """
+    validate_jar_magic(jar_bytes)
+
     digest = sha256(jar_bytes)
     packages: set[str] = set()
     urls: set[str] = set()
     class_count = 0
     entry_count = 0
     resource_count = 0
+    read_budget = Config.MAX_ZIP_TOTAL_READ_BYTES
 
     try:
         zf = zipfile.ZipFile(io.BytesIO(jar_bytes))
@@ -56,12 +126,27 @@ def analyze(jar_bytes: bytes) -> dict:
         raise ValueError("arquivo não é um .jar/zip válido") from e
 
     with zf:
-        for info in zf.infolist():
+        entries = zf.infolist()
+        if len(entries) > Config.MAX_ZIP_ENTRIES:
+            raise ValueError(
+                f".jar com entradas demais ({len(entries)}, "
+                f"limite {Config.MAX_ZIP_ENTRIES})"
+            )
+
+        for info in entries:
             entry_count += 1
             if info.is_dir():
                 continue
             name = info.filename
+            if not _safe_zip_name(name):
+                continue
+
+            suspicious = _entry_suspicious(info)
+            if suspicious:
+                raise ValueError(f"arquivo .jar rejeitado: {suspicious}")
+
             lname = name.lower()
+            scan_content = lname.endswith(CLASS_EXT) or lname.endswith(RESOURCE_EXTS)
 
             if lname.endswith(CLASS_EXT):
                 class_count += 1
@@ -69,18 +154,24 @@ def analyze(jar_bytes: bytes) -> dict:
                     pkg = name.rsplit("/", 1)[0].replace("/", ".")
                     if pkg and not pkg.startswith("META-INF"):
                         packages.add(pkg)
-                try:
-                    with zf.open(info) as fh:
-                        urls.update(_extract_urls(fh.read()))
-                except (KeyError, zipfile.BadZipFile, RuntimeError):
-                    pass
             elif lname.endswith(RESOURCE_EXTS):
                 resource_count += 1
-                try:
-                    with zf.open(info) as fh:
-                        urls.update(_extract_urls(fh.read()))
-                except (KeyError, zipfile.BadZipFile, RuntimeError):
-                    pass
+            else:
+                continue
+
+            if not scan_content:
+                continue
+
+            try:
+                with zf.open(info) as fh:
+                    data, read_budget = _read_bounded(
+                        fh,
+                        Config.MAX_ZIP_ENTRY_READ_BYTES,
+                        read_budget,
+                    )
+                    urls.update(_extract_urls(data))
+            except (KeyError, zipfile.BadZipFile, RuntimeError, OSError):
+                pass
 
     return {
         "sha256": digest,

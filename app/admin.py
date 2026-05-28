@@ -31,6 +31,17 @@ bp = Blueprint("admin", __name__)
 HEX64 = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 
 
+def _is_admin_login() -> bool:
+    return request.endpoint == "admin.login"
+
+
+@bp.before_request
+@limiter.limit("120 per minute", exempt_when=_is_admin_login)
+def _admin_rate_limit():
+    """Authenticated admin API — cap token abuse and expensive list endpoints."""
+    pass
+
+
 # ── auth ────────────────────────────────────────────────────────────
 @bp.post("/login")
 @limiter.limit("8 per minute")
@@ -205,6 +216,7 @@ def get_report(report_id):
 
 
 @bp.get("/reports/<int:report_id>/file")
+@limiter.limit("20 per hour")
 @require_admin
 def download_report(report_id):
     db = get_db()

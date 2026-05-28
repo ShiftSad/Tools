@@ -5,9 +5,17 @@ import re
 
 from flask import Blueprint, jsonify, request
 
+from . import limiter
 from .db import get_db
 
 bp = Blueprint("failmark", __name__)
+
+
+@bp.before_request
+@limiter.limit("60 per minute")
+def _failmark_rate_limit():
+    """Public read-only API — cap search/peers abuse per IP."""
+    pass
 
 def _infer_segment(name: str) -> str:
     n = name.lower()
@@ -119,6 +127,7 @@ def cpu_detail(cpu_id: int):
 
 
 @bp.get("/failmark/cpu/<int:cpu_id>/peers")
+@limiter.limit("30 per minute")
 def cpu_peers(cpu_id: int):
     db = get_db()
     target = db.execute(
