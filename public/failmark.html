@@ -275,7 +275,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `erro ${res.status}`);
         input.value = data.cpu.name;
-        renderResult(data.cpu, data.peers, data.table);
+        renderResult(data.cpu, data.peers || [], data.table || [data.cpu]);
       } catch (err) {
         $("#result").hidden = false;
         $("#result").innerHTML = `<p class="err">${escapeHtml(err.message || "falha ao carregar")}</p>`;

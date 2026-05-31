@@ -137,7 +137,10 @@ def cpu_peers(cpu_id: int):
     if not target:
         return jsonify(error="processador não encontrado"), 404
     if target["single_thread"] is None:
-        return jsonify(cpu=_row_to_json(target), peers=[])
+        # CPU é antigo demais ou novo demais pro PassMark ter pontuado.
+        # Ainda devolvemos `table` (só com o alvo) pro front não quebrar.
+        target_json = _row_to_json(target)
+        return jsonify(cpu=target_json, peers=[], table=[target_json])
 
     st = target["single_thread"]
     peers = db.execute(
