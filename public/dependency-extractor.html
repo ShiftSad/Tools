@@ -132,7 +132,7 @@
 
     <div class="attach-row">
       <label>
-        <input type="file" id="file-input" multiple accept=".jar,.zip" />
+        <input type="file" id="file-input" multiple accept=".jar,.zip,.tar.gz,.tgz,.tar" />
         <a class="link" href="#" onclick="event.preventDefault();this.previousElementSibling.click();">Anexar arquivos</a>
       </label>
       <span class="attach-row__count" id="count">nenhum arquivo</span>
@@ -199,6 +199,10 @@
           await ingestJar(file.name, file);
         } else if (name.endsWith(".zip")) {
           await ingestZip(file.name, file);
+        } else if (name.endsWith(".tar.gz") || name.endsWith(".tgz")) {
+          await ingestTarGz(file.name, file);
+        } else if (name.endsWith(".tar")) {
+          await ingestTar(file.name, file);
         } else {
           state.skipped.push({ filename: file.name, reason: "tipo não suportado" });
         }
@@ -244,6 +248,81 @@
         const innerBlob = await entry.async("blob");
         await ingestJar(`${label} › ${path}`, innerBlob);
       }));
+    }
+
+    // a .tar.gz / .tgz is a gzip-stream wrapping a tar; .tar is the raw archive.
+    // Both commonly bundle a server's plugins/ folder. We gunzip with the native
+    // DecompressionStream (no extra deps) and walk the tar blocks for .jar files.
+    async function ingestTarGz(label, blob) {
+      let bytes;
+      try {
+        bytes = await gunzip(blob);
+      } catch {
+        state.skipped.push({ filename: label, reason: "falha ao descompactar gzip" });
+        return;
+      }
+      await ingestTarBytes(label, bytes);
+    }
+
+    async function ingestTar(label, blob) {
+      await ingestTarBytes(label, new Uint8Array(await blob.arrayBuffer()));
+    }
+
+    async function ingestTarBytes(label, bytes) {
+      let jars;
+      try {
+        jars = readTar(bytes).filter(e => e.name.toLowerCase().endsWith(".jar"));
+      } catch {
+        state.skipped.push({ filename: label, reason: "tar corrompido" });
+        return;
+      }
+      if (!jars.length) {
+        state.skipped.push({ filename: label, reason: "sem .jar dentro" });
+        return;
+      }
+      await Promise.all(jars.map(e =>
+        ingestJar(`${label} › ${e.name}`, new Blob([e.data]))
+      ));
+    }
+
+    async function gunzip(blob) {
+      const stream = blob.stream().pipeThrough(new DecompressionStream("gzip"));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    // minimal tar reader → [{ name, data: Uint8Array }] for regular files only.
+    // Handles the USTAR name/prefix split and GNU long names ('L'); skips dirs
+    // and pax headers. Stops at the zero-filled end-of-archive block.
+    function readTar(u8) {
+      const out = [];
+      const dec = new TextDecoder();
+      const str = (start, len) => {
+        let end = start;
+        const stop = start + len;
+        while (end < stop && u8[end] !== 0) end++;
+        return dec.decode(u8.subarray(start, end));
+      };
+      let off = 0;
+      let longName = null;
+      while (off + 512 <= u8.length) {
+        if (u8.subarray(off, off + 512).every(b => b === 0)) break; // end of archive
+        const size = parseInt(str(off + 124, 12).trim(), 8) || 0;
+        const type = String.fromCharCode(u8[off + 156]);
+        const dataStart = off + 512;
+        if (type === "L") {
+          longName = str(dataStart, size).replace(/\0+$/, "");
+        } else if (type === "0" || type === "\0") {
+          const prefix = str(off + 345, 155);
+          const name = str(off, 100);
+          const full = longName || (prefix ? prefix + "/" + name : name);
+          out.push({ name: full, data: u8.subarray(dataStart, dataStart + size) });
+          longName = null;
+        } else {
+          longName = null;
+        }
+        off = dataStart + Math.ceil(size / 512) * 512;
+      }
+      return out;
     }
 
     function parsePluginYml(text) {
@@ -331,7 +410,7 @@
 
       let header;
       if (!unique.length) {
-        header = `nenhum plugin lido — anexe arquivos <span class="mono">.jar</span> ou <span class="mono">.zip</span> primeiro`;
+        header = `nenhum plugin lido — anexe arquivos <span class="mono">.jar</span>, <span class="mono">.zip</span> ou <span class="mono">.tar.gz</span> primeiro`;
       } else {
         header = `${total} ${total === 1 ? "plugin depende" : "plugins dependem"} de <strong>${escapeHtml(target)}</strong>${found ? "" : " · alvo não está no conjunto"}`;
       }
